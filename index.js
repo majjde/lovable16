@@ -44,8 +44,8 @@ function handleValidate(req, res) {
 
   console.log(`[Validation Request] Path: ${req.path}, Key: "${license_key}", Device: "${device_id}", Session: "${session_id}"`);
 
-  // Allow a default key for testing if validKeys is empty, otherwise verify the key
-  if (validKeys.size > 0 && !validKeys.has(license_key)) {
+  // Verify the key is in our valid keys map
+  if (!validKeys.has(license_key)) {
     return res.status(400).json({
       valid: false,
       status: 'invalid',
