@@ -1,8 +1,21 @@
 require('dotenv').config();
+const express = require('express');
+const cors = require('cors');
 const TelegramBot = require('node-telegram-bot-api');
 const crypto = require('crypto');
 
-// Generate 12-character formatted key: LOVE-XXXX-XXXX
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Enable CORS and JSON parsing
+app.use(cors());
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+// In-memory activated sessions store
+const activeSessions = new Map();
+
+// Helper: Generate 12-character formatted key: LOVE-XXXX-XXXX
 function generateLicenseKey() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
   let randomPart = '';
@@ -13,84 +26,135 @@ function generateLicenseKey() {
   return `LOVE-${randomPart.slice(0, 4)}-${randomPart.slice(4, 8)}`;
 }
 
-// Format expiration date
+// Helper: Format expiration date
 function getExpiryDate(days) {
   const date = new Date();
   date.setDate(date.getDate() + parseInt(days, 10));
   return date.toISOString().split('T')[0];
 }
 
+// Validation Handler logic (supports /api/validate and /validate)
+function handleValidate(req, res) {
+  const { license_key, device_id, session_id, heartbeat } = req.body || {};
+
+  console.log(`[Validation Request] Key: "${license_key}", Device: "${device_id}", Session: "${session_id}", Heartbeat: ${!!heartbeat}`);
+
+  // Accept non-empty license key or active session
+  if (!license_key && !session_id) {
+    return res.status(400).json({
+      valid: false,
+      status: 'invalid',
+      error: 'License key or session ID is required.'
+    });
+  }
+
+  const activeSessionId = session_id || 'sess_' + crypto.randomBytes(12).toString('hex');
+  const now = new Date();
+  const expiresAt = new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000).toISOString(); // Default 1 year validity
+
+  activeSessions.set(activeSessionId, {
+    license_key: license_key || 'UNKNOWN',
+    device_id: device_id || 'UNKNOWN',
+    activated_at: now.toISOString(),
+    expires_at: expiresAt
+  });
+
+  return res.json({
+    valid: true,
+    session_id: activeSessionId,
+    status: 'valid',
+    expires_at: expiresAt,
+    activated_at: now.toISOString()
+  });
+}
+
+// Register endpoints
+app.post('/api/validate', handleValidate);
+app.post('/validate', handleValidate);
+
+// Health check endpoint for Railway & monitoring
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', service: 'LOVABLE License Backend', timestamp: new Date().toISOString() });
+});
+
+app.get('/', (req, res) => {
+  res.send('<h1>LOVABLE License Server & API</h1><p>Status: Active | Endpoint: <code>POST /api/validate</code></p>');
+});
+
+// Start Express HTTP Server
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 LOVABLE License API Server running on port ${PORT}`);
+});
+
+// Optional Telegram Bot Initialization
 const token = process.env.BOT_TOKEN;
 
-if (require.main === module) {
-  if (!token || token === 'YOUR_TELEGRAM_BOT_TOKEN_HERE') {
-    console.error('ERROR: Please set a valid BOT_TOKEN in your .env file.');
-    process.exit(1);
-  }
+if (token && token !== 'YOUR_TELEGRAM_BOT_TOKEN_HERE') {
+  try {
+    const bot = new TelegramBot(token, { polling: true });
+    console.log('🤖 LOVABLE Telegram License Bot is running...');
 
-  const bot = new TelegramBot(token, { polling: true });
+    bot.onText(/\/start/, (msg) => {
+      sendDurationPrompt(bot, msg.chat.id);
+    });
 
-  console.log('🤖 LOVABLE License Bot is running...');
-
-  // Start command - ask for duration first
-  bot.onText(/\/start/, (msg) => {
-    sendDurationPrompt(msg.chat.id);
-  });
-
-  // Handle messages when user sends text
-  bot.on('message', (msg) => {
-    if (msg.text && !msg.text.startsWith('/')) {
-      const days = parseInt(msg.text, 10);
-      if (!isNaN(days) && days > 0) {
-        issueKey(msg.chat.id, days);
-      } else {
-        sendDurationPrompt(msg.chat.id);
+    bot.on('message', (msg) => {
+      if (msg.text && !msg.text.startsWith('/')) {
+        const days = parseInt(msg.text, 10);
+        if (!isNaN(days) && days > 0) {
+          issueKey(bot, msg.chat.id, days);
+        } else {
+          sendDurationPrompt(bot, msg.chat.id);
+        }
       }
-    }
-  });
+    });
 
-  // Handle inline keyboard selection
-  bot.on('callback_query', (query) => {
-    const chatId = query.message.chat.id;
-    const data = query.data;
+    bot.on('callback_query', (query) => {
+      const chatId = query.message.chat.id;
+      const data = query.data;
 
-    if (data.startsWith('duration_')) {
-      const days = parseInt(data.replace('duration_', ''), 10);
-      bot.answerCallbackQuery(query.id);
-      issueKey(chatId, days);
-    }
-  });
+      if (data.startsWith('duration_')) {
+        const days = parseInt(data.replace('duration_', ''), 10);
+        bot.answerCallbackQuery(query.id);
+        issueKey(bot, chatId, days);
+      }
+    });
+  } catch (err) {
+    console.error('Failed to start Telegram Bot:', err.message);
+  }
+} else {
+  console.log('ℹ️ BOT_TOKEN not set or default. Running HTTP API server only.');
+}
 
-  function sendDurationPrompt(chatId) {
-    const options = {
-      reply_markup: {
-        inline_keyboard: [
-          [
-            { text: '1 Month (30 Days)', callback_data: 'duration_30' },
-            { text: '3 Months (90 Days)', callback_data: 'duration_90' }
-          ],
-          [
-            { text: '6 Months (180 Days)', callback_data: 'duration_180' },
-            { text: '1 Year (365 Days)', callback_data: 'duration_365' }
-          ]
+function sendDurationPrompt(bot, chatId) {
+  const options = {
+    reply_markup: {
+      inline_keyboard: [
+        [
+          { text: '1 Month (30 Days)', callback_data: 'duration_30' },
+          { text: '3 Months (90 Days)', callback_data: 'duration_90' }
+        ],
+        [
+          { text: '6 Months (180 Days)', callback_data: 'duration_180' },
+          { text: '1 Year (365 Days)', callback_data: 'duration_365' }
         ]
-      }
-    };
-    bot.sendMessage(chatId, '✨ *Welcome to LOVABLE License Generator*\n\nPlease select or type the duration (in days) for your license key:', { parse_mode: 'Markdown', ...options });
-  }
+      ]
+    }
+  };
+  bot.sendMessage(chatId, '✨ *Welcome to LOVABLE License Generator*\n\nPlease select or type the duration (in days) for your license key:', { parse_mode: 'Markdown', ...options });
+}
 
-  function issueKey(chatId, days) {
-    const licenseKey = generateLicenseKey();
-    const expiry = getExpiryDate(days);
+function issueKey(bot, chatId, days) {
+  const licenseKey = generateLicenseKey();
+  const expiry = getExpiryDate(days);
 
-    const message = `🔑 *LOVABLE License Key Generated!*\n\n` +
-                    `*License Key:* \`${licenseKey}\`\n` +
-                    `*Duration:* ${days} Days\n` +
-                    `*Expires On:* ${expiry}\n\n` +
-                    `_Tap to copy the license key above._`;
+  const message = `🔑 *LOVABLE License Key Generated!*\n\n` +
+                  `*License Key:* \`${licenseKey}\`\n` +
+                  `*Duration:* ${days} Days\n` +
+                  `*Expires On:* ${expiry}\n\n` +
+                  `_Tap to copy the license key above._`;
 
-    bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
-  }
+  bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
 }
 
 module.exports = {
