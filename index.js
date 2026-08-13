@@ -103,6 +103,13 @@ app.get('/', (req, res) => {
   res.send('<h1>LOVABLE License Server & API</h1><p>Status: Active | Endpoint: <code>POST /api/validate</code></p>');
 });
 
+// Stub endpoints for extension features (bypassing eklas proxy)
+app.post('/api/v1/lovable/session', (req, res) => res.json({ ok: true }));
+app.post('/api/v1/lovable/chat', (req, res) => res.json({ ok: true }));
+app.post('/api/v1/lovable/approve-plan', (req, res) => res.json({ ok: true }));
+app.post('/api/v1/lovable/create-project', (req, res) => res.json({ ok: true }));
+app.post('/api/v1/lovable/source-code', (req, res) => res.json({ ok: true }));
+
 // Start Express HTTP Server
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 LOVABLE License API Server running on port ${PORT}`);
