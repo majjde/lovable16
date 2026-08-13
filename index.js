@@ -33,36 +33,32 @@ function getExpiryDate(days) {
   return date.toISOString().split('T')[0];
 }
 
-// Validation Handler logic (supports /api/validate and /validate)
+// Validation Handler logic (supports /api/validate, /validate, and root fallback)
 function handleValidate(req, res) {
-  const { license_key, device_id, session_id, heartbeat } = req.body || {};
+  const body = req.body || {};
+  const license_key = body.license_key || body.licenseKey || body.key || body.ql_license_key;
+  const device_id = body.device_id || body.deviceId || 'device_default';
+  const session_id = body.session_id || body.sessionId;
 
-  console.log(`[Validation Request] Key: "${license_key}", Device: "${device_id}", Session: "${session_id}", Heartbeat: ${!!heartbeat}`);
-
-  // Accept non-empty license key or active session
-  if (!license_key && !session_id) {
-    return res.status(400).json({
-      valid: false,
-      status: 'invalid',
-      error: 'License key or session ID is required.'
-    });
-  }
+  console.log(`[Validation Request] Path: ${req.path}, Key: "${license_key}", Device: "${device_id}", Session: "${session_id}"`);
 
   const activeSessionId = session_id || 'sess_' + crypto.randomBytes(12).toString('hex');
   const now = new Date();
-  const expiresAt = new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000).toISOString(); // Default 1 year validity
+  const expiresAt = new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000).toISOString(); // 1 year validity
 
   activeSessions.set(activeSessionId, {
-    license_key: license_key || 'UNKNOWN',
-    device_id: device_id || 'UNKNOWN',
+    license_key: license_key || 'LOVE-FREEFLOW-KEY',
+    device_id: device_id,
     activated_at: now.toISOString(),
     expires_at: expiresAt
   });
 
   return res.json({
     valid: true,
-    session_id: activeSessionId,
     status: 'valid',
+    message: 'License activated successfully!',
+    user_name: 'Lovable Unlimited',
+    session_id: activeSessionId,
     expires_at: expiresAt,
     activated_at: now.toISOString()
   });
