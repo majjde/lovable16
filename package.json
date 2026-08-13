@@ -1,0 +1,22 @@
+{
+  "name": "lovable-license-bot",
+  "version": "1.0.0",
+  "description": "Super simple Telegram license key generator bot for LOVABLE",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "keywords": [
+    "telegram",
+    "bot",
+    "license",
+    "generator",
+    "lovable"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "node-telegram-bot-api": "^0.66.0"
+  }
+}
