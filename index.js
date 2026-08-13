@@ -12,6 +12,8 @@ app.use(cors());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// In-memory store for generated valid keys
+const validKeys = new Map();
 // In-memory activated sessions store
 const activeSessions = new Map();
 
@@ -42,9 +44,20 @@ function handleValidate(req, res) {
 
   console.log(`[Validation Request] Path: ${req.path}, Key: "${license_key}", Device: "${device_id}", Session: "${session_id}"`);
 
+  // Allow a default key for testing if validKeys is empty, otherwise verify the key
+  if (validKeys.size > 0 && !validKeys.has(license_key)) {
+    return res.status(400).json({
+      valid: false,
+      status: 'invalid',
+      message: 'License not found or invalid key!'
+    });
+  }
+
+  const keyData = validKeys.get(license_key) || { expires_at: new Date(Date.now() + 365*24*60*60*1000) };
+
   const activeSessionId = session_id || 'sess_' + crypto.randomBytes(12).toString('hex');
   const now = new Date();
-  const expiresAt = new Date(now.getTime() + 365 * 24 * 60 * 60 * 1000).toISOString(); // 1 year validity
+  const expiresAt = new Date(keyData.expires_at).toISOString();
 
   activeSessions.set(activeSessionId, {
     license_key: license_key || 'LOVE-FREEFLOW-KEY',
@@ -143,6 +156,11 @@ function sendDurationPrompt(bot, chatId) {
 function issueKey(bot, chatId, days) {
   const licenseKey = generateLicenseKey();
   const expiry = getExpiryDate(days);
+
+  validKeys.set(licenseKey, {
+    duration: days,
+    expires_at: expiry
+  });
 
   const message = `🔑 *LOVABLE License Key Generated!*\n\n` +
                   `*License Key:* \`${licenseKey}\`\n` +
