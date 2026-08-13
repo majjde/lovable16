@@ -67,13 +67,26 @@ function handleValidate(req, res) {
   });
 
   return res.json({
+    // Old extension format
     valid: true,
     status: 'valid',
     message: 'License activated successfully!',
     user_name: 'Lovable Unlimited',
     session_id: activeSessionId,
     expires_at: expiresAt,
-    activated_at: now.toISOString()
+    activated_at: now.toISOString(),
+    
+    // New extension format
+    ok: true,
+    license_id: 'lic_' + crypto.randomBytes(8).toString('hex'),
+    email: 'user@lovable.app',
+    license: {
+      expires_at: expiresAt,
+      created_at: now.toISOString(),
+      plan: 'premium',
+      status: 'active',
+      bound_email: 'user@lovable.app'
+    }
   });
 }
 
