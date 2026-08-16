@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const TelegramBot = require('node-telegram-bot-api');
 const crypto = require('crypto');
+const db = require('./db');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -122,23 +123,81 @@ app.listen(PORT, '0.0.0.0', () => {
 
 // Optional Telegram Bot Initialization
 const token = process.env.BOT_TOKEN;
+const ADMIN_CHAT_ID = process.env.ADMIN_CHAT_ID;
 
 if (token && token !== 'YOUR_TELEGRAM_BOT_TOKEN_HERE') {
   try {
     const bot = new TelegramBot(token, { polling: true });
     console.log('🤖 LOVABLE Telegram License Bot is running...');
 
+    const adminStates = new Map();
+
+    function checkAuth(ctxFromId, chatId) {
+      if (chatId.toString() === ADMIN_CHAT_ID) return true;
+      const auth = db.isUserAuthorized(ctxFromId);
+      return auth.isAuthorized;
+    }
+
+    function sendAccessDenied(chatId) {
+      bot.sendMessage(chatId, "⛔ <b>Access Denied</b>\n\nYou are not authorized to use this bot. Please contact the administrator for access.", { parse_mode: 'HTML' });
+    }
+
     bot.onText(/\/start/, (msg) => {
-      sendDurationPrompt(bot, msg.chat.id);
+      const chatId = msg.chat.id;
+      if (!checkAuth(msg.from.id, chatId)) {
+        return sendAccessDenied(chatId);
+      }
+      sendDurationPrompt(bot, chatId, chatId.toString() === ADMIN_CHAT_ID);
     });
 
     bot.on('message', (msg) => {
-      if (msg.text && !msg.text.startsWith('/')) {
-        const days = parseInt(msg.text, 10);
+      if (msg.text && msg.text.startsWith('/start')) return;
+
+      const chatId = msg.chat.id;
+      if (!checkAuth(msg.from.id, chatId)) {
+        if (!msg.text?.startsWith('/')) sendAccessDenied(chatId);
+        return;
+      }
+
+      const text = msg.text;
+      
+      if (chatId.toString() === ADMIN_CHAT_ID && adminStates.has(chatId)) {
+        const state = adminStates.get(chatId);
+        if (state.action === 'AWAITING_USER_ADD') {
+          const parts = text.split(',');
+          if (parts.length === 2) {
+            const userId = parts[0].trim();
+            const maxKeys = parseInt(parts[1].trim(), 10);
+            if (!isNaN(maxKeys)) {
+              db.addAuthorizedUser(userId, maxKeys);
+              bot.sendMessage(chatId, `✅ Successfully authorized user ${userId} for ${maxKeys} keys/day.`);
+            } else {
+              bot.sendMessage(chatId, '❌ Invalid format. Please send: UserID, MaxKeys');
+            }
+          } else {
+            bot.sendMessage(chatId, '❌ Invalid format. Please send: UserID, MaxKeys');
+          }
+          adminStates.delete(chatId);
+          return;
+        } else if (state.action === 'AWAITING_BULK_KEYS') {
+          const keys = text.split(/[\n,]+/).map(k => k.trim()).filter(k => k.length > 0);
+          if (keys.length > 0) {
+            const added = db.addBulkKeys(state.validity, keys);
+            bot.sendMessage(chatId, `✅ Successfully added ${added} keys to the ${state.validity} inventory.`);
+          } else {
+            bot.sendMessage(chatId, '❌ No valid keys found.');
+          }
+          adminStates.delete(chatId);
+          return;
+        }
+      }
+
+      if (text && !text.startsWith('/')) {
+        const days = parseInt(text, 10);
         if (!isNaN(days) && days > 0) {
-          issueKey(bot, msg.chat.id, days);
+          issueKey(bot, chatId, days);
         } else {
-          sendDurationPrompt(bot, msg.chat.id);
+          sendDurationPrompt(bot, chatId, chatId.toString() === ADMIN_CHAT_ID);
         }
       }
     });
@@ -146,6 +205,90 @@ if (token && token !== 'YOUR_TELEGRAM_BOT_TOKEN_HERE') {
     bot.on('callback_query', (query) => {
       const chatId = query.message.chat.id;
       const data = query.data;
+
+      if (!checkAuth(query.from.id, chatId)) {
+        bot.answerCallbackQuery(query.id, { text: "⛔ Access Denied", show_alert: true });
+        return;
+      }
+
+      if (data === 'admin_add_user' && chatId.toString() === ADMIN_CHAT_ID) {
+        adminStates.set(chatId, { action: 'AWAITING_USER_ADD' });
+        bot.sendMessage(chatId, 'Send the user ID and daily limit separated by a comma.\nExample: 123456789, 5');
+        bot.answerCallbackQuery(query.id);
+        return;
+      }
+
+      if (data === 'admin_bulk_upload' && chatId.toString() === ADMIN_CHAT_ID) {
+        const options = {
+          reply_markup: {
+            inline_keyboard: [
+              [ { text: '[20m]', callback_data: 'admin_upload:20m' }, { text: '[1d]', callback_data: 'admin_upload:1d' }, { text: '[3d]', callback_data: 'admin_upload:3d' } ],
+              [ { text: '[7d]', callback_data: 'admin_upload:7d' }, { text: '[14d]', callback_data: 'admin_upload:14d' }, { text: '[30d]', callback_data: 'admin_upload:30d' } ]
+            ]
+          }
+        };
+        bot.sendMessage(chatId, 'Select the validity for the keys you are uploading:', options);
+        bot.answerCallbackQuery(query.id);
+        return;
+      }
+
+      if (data.startsWith('admin_upload:') && chatId.toString() === ADMIN_CHAT_ID) {
+        const validity = data.split(':')[1];
+        adminStates.set(chatId, { action: 'AWAITING_BULK_KEYS', validity });
+        bot.sendMessage(chatId, `Please paste the keys for ${validity} validity (separated by commas or newlines).`);
+        bot.answerCallbackQuery(query.id);
+        return;
+      }
+
+      if (data === 'menu:extension_1') {
+        const stock = db.getInventoryStock();
+        const inline_keyboard = [];
+        let currentRow = [];
+        
+        for (const [validity, count] of Object.entries(stock)) {
+          if (count > 0) {
+            currentRow.push({ text: `${validity} (${count} in stock)`, callback_data: `claim_ext:${validity}` });
+            if (currentRow.length === 2) {
+              inline_keyboard.push(currentRow);
+              currentRow = [];
+            }
+          }
+        }
+        if (currentRow.length > 0) inline_keyboard.push(currentRow);
+
+        if (inline_keyboard.length === 0) {
+          bot.sendMessage(chatId, '📦 <b>Available Extension Keys</b>\n\nCurrently out of stock for all validities.', { parse_mode: 'HTML' });
+        } else {
+          bot.sendMessage(chatId, '📦 <b>Available Extension Keys</b>\n\nSelect a validity below to generate a key. You can claim up to your daily limit.', {
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard }
+          });
+        }
+        bot.answerCallbackQuery(query.id);
+        return;
+      }
+
+      if (data.startsWith('claim_ext:')) {
+        const validity = data.split(':')[1];
+        
+        if (!db.canUserClaimToday(query.from.id)) {
+          bot.sendMessage(chatId, "🛑 <b>Daily Limit Reached</b>\nYou have exhausted your daily key allowance. Please try again tomorrow.", { parse_mode: 'HTML' });
+          bot.answerCallbackQuery(query.id);
+          return;
+        }
+
+        const keyString = db.dispenseKey(validity, query.from.id);
+        if (!keyString) {
+          bot.sendMessage(chatId, "❌ Out of stock for this validity.");
+          bot.answerCallbackQuery(query.id);
+          return;
+        }
+
+        db.incrementUserClaim(query.from.id);
+        bot.sendMessage(chatId, `🎉 <b>Key Generated Successfully!</b>\n\nValidity: ${validity}\nLicense Key: <code>${keyString}</code>`, { parse_mode: 'HTML' });
+        bot.answerCallbackQuery(query.id);
+        return;
+      }
 
       if (data.startsWith('duration_')) {
         const days = parseInt(data.replace('duration_', ''), 10);
@@ -160,22 +303,34 @@ if (token && token !== 'YOUR_TELEGRAM_BOT_TOKEN_HERE') {
   console.log('ℹ️ BOT_TOKEN not set or default. Running HTTP API server only.');
 }
 
-function sendDurationPrompt(bot, chatId) {
+function sendDurationPrompt(bot, chatId, isAdmin = false) {
+  const inline_keyboard = [
+    [
+      { text: '1 Month (30 Days)', callback_data: 'duration_30' },
+      { text: '3 Months (90 Days)', callback_data: 'duration_90' }
+    ],
+    [
+      { text: '6 Months (180 Days)', callback_data: 'duration_180' },
+      { text: '1 Year (365 Days)', callback_data: 'duration_365' }
+    ],
+    [
+      { text: '🧩 Extension 1', callback_data: 'menu:extension_1' }
+    ]
+  ];
+
+  if (isAdmin) {
+    inline_keyboard.push([
+      { text: '👥 Add Authorized User', callback_data: 'admin_add_user' },
+      { text: '🔑 Bulk Upload Keys', callback_data: 'admin_bulk_upload' }
+    ]);
+  }
+
   const options = {
     reply_markup: {
-      inline_keyboard: [
-        [
-          { text: '1 Month (30 Days)', callback_data: 'duration_30' },
-          { text: '3 Months (90 Days)', callback_data: 'duration_90' }
-        ],
-        [
-          { text: '6 Months (180 Days)', callback_data: 'duration_180' },
-          { text: '1 Year (365 Days)', callback_data: 'duration_365' }
-        ]
-      ]
+      inline_keyboard
     }
   };
-  bot.sendMessage(chatId, '✨ *Welcome to LOVABLE License Generator*\n\nPlease select or type the duration (in days) for your license key:', { parse_mode: 'Markdown', ...options });
+  bot.sendMessage(chatId, '✨ *Welcome to LOVABLE License Generator*\n\nPlease select an option below:', { parse_mode: 'Markdown', ...options });
 }
 
 function issueKey(bot, chatId, days) {
