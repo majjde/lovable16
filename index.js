@@ -306,14 +306,6 @@ if (token && token !== 'YOUR_TELEGRAM_BOT_TOKEN_HERE') {
 function sendDurationPrompt(bot, chatId, isAdmin = false) {
   const inline_keyboard = [
     [
-      { text: '1 Month (30 Days)', callback_data: 'duration_30' },
-      { text: '3 Months (90 Days)', callback_data: 'duration_90' }
-    ],
-    [
-      { text: '6 Months (180 Days)', callback_data: 'duration_180' },
-      { text: '1 Year (365 Days)', callback_data: 'duration_365' }
-    ],
-    [
       { text: '🧩 Extension 1', callback_data: 'menu:extension_1' }
     ]
   ];
