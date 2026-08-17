@@ -136,8 +136,58 @@ if (token && token !== 'YOUR_TELEGRAM_BOT_TOKEN_HERE') {
           parse_mode: 'Markdown',
           reply_markup: {
             inline_keyboard: [
-              [{ text: '👥 Set Authorized User', callback_data: 'admin_add_user' }],
+              [{ text: '👥 Manage Users', callback_data: 'admin_users_menu' }],
               [{ text: '🧩 Extensions', callback_data: 'admin_extensions_menu' }]
+            ]
+          }
+        }
+      };
+    }
+
+    function getUsersMenu() {
+      return {
+        text: '👥 *User Management*\n\nSelect an option below:',
+        options: {
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '➕ Add New User', callback_data: 'admin_add_user' }],
+              [{ text: '⚙️ Existing Users', callback_data: 'admin_list_users' }],
+              [{ text: '🔙 Back', callback_data: 'main_menu' }]
+            ]
+          }
+        }
+      };
+    }
+
+    function getExistingUsersMenu() {
+      const users = db.getAuthorizedUsers();
+      const keyboard = [];
+      for (const u of users) {
+        keyboard.push([{ text: `👤 ${u.user_id} (Limit: ${u.max_daily_keys})`, callback_data: `manage_user:${u.user_id}` }]);
+      }
+      keyboard.push([{ text: '🔙 Back', callback_data: 'admin_users_menu' }]);
+      return {
+        text: '⚙️ *Existing Users*\n\nSelect a user to manage:',
+        options: {
+          parse_mode: 'Markdown',
+          reply_markup: { inline_keyboard: keyboard }
+        }
+      };
+    }
+
+    function getUserProfileMenu(userId) {
+      const auth = db.isUserAuthorized(userId);
+      if (!auth.isAuthorized) return getExistingUsersMenu();
+      return {
+        text: `👤 *User Profile*\n\n*ID:* \`${userId}\`\n*Daily Limit:* ${auth.maxKeys}`,
+        options: {
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: '✏️ Edit Limit', callback_data: `edit_limit:${userId}` }],
+              [{ text: '❌ Revoke User', callback_data: `revoke_user:${userId}` }],
+              [{ text: '🔙 Back', callback_data: 'admin_list_users' }]
             ]
           }
         }
@@ -195,9 +245,11 @@ if (token && token !== 'YOUR_TELEGRAM_BOT_TOKEN_HERE') {
       const stock = db.getInventoryStock(extName);
       
       const getBtnText = (validity) => {
-        if (isAdmin) return `[${validity}]`;
-        const count = stock[validity] || 0;
-        return `${validity} (${count} in stock)`;
+        if (isAdmin) {
+          const count = stock[validity] || 0;
+          return `${validity} (${count} in stock)`;
+        }
+        return `[${validity}]`;
       };
 
       const keyboard = [
@@ -268,10 +320,24 @@ if (token && token !== 'YOUR_TELEGRAM_BOT_TOKEN_HERE') {
             bot.sendMessage(chatId, '❌ Invalid format. Please send: UserID, MaxKeys');
           }
           adminStates.delete(chatId);
-          const menu = getAdminMenu(chatId);
+          const menu = getUsersMenu();
           bot.sendMessage(chatId, menu.text, menu.options);
           return;
         } 
+        
+        if (state.action === 'AWAITING_EDIT_LIMIT') {
+          const limit = parseInt(text.trim(), 10);
+          if (!isNaN(limit)) {
+            db.addAuthorizedUser(state.targetUserId, limit);
+            bot.sendMessage(chatId, `✅ Successfully updated limit for \`${state.targetUserId}\` to ${limit}.`, { parse_mode: 'Markdown' });
+          } else {
+            bot.sendMessage(chatId, '❌ Invalid format. Please send a number.');
+          }
+          adminStates.delete(chatId);
+          const menu = getUserProfileMenu(state.targetUserId);
+          bot.sendMessage(chatId, menu.text, menu.options);
+          return;
+        }
         
         if (state.action === 'AWAITING_EXT_ADD') {
           if (text) {
@@ -331,10 +397,42 @@ if (token && token !== 'YOUR_TELEGRAM_BOT_TOKEN_HERE') {
         return;
       }
 
+      if (data === 'admin_users_menu' && isAdmin) {
+        editMessage(getUsersMenu());
+        return;
+      }
+
       if (data === 'admin_add_user' && isAdmin) {
         adminStates.set(chatId, { action: 'AWAITING_USER_ADD' });
         bot.sendMessage(chatId, 'Send the user ID and daily limit separated by a comma.\nExample: 123456789, 5');
         bot.answerCallbackQuery(query.id);
+        return;
+      }
+      
+      if (data === 'admin_list_users' && isAdmin) {
+        editMessage(getExistingUsersMenu());
+        return;
+      }
+      
+      if (data.startsWith('manage_user:') && isAdmin) {
+        const userId = data.split(':')[1];
+        editMessage(getUserProfileMenu(userId));
+        return;
+      }
+      
+      if (data.startsWith('edit_limit:') && isAdmin) {
+        const userId = data.split(':')[1];
+        adminStates.set(chatId, { action: 'AWAITING_EDIT_LIMIT', targetUserId: userId });
+        bot.sendMessage(chatId, `Please send the new daily limit for user \`${userId}\`:`, { parse_mode: 'Markdown' });
+        bot.answerCallbackQuery(query.id);
+        return;
+      }
+      
+      if (data.startsWith('revoke_user:') && isAdmin) {
+        const userId = data.split(':')[1];
+        db.revokeUser(userId);
+        bot.answerCallbackQuery(query.id, { text: `User ${userId} revoked.`, show_alert: true });
+        editMessage(getExistingUsersMenu());
         return;
       }
 
@@ -387,10 +485,42 @@ if (token && token !== 'YOUR_TELEGRAM_BOT_TOKEN_HERE') {
 
           db.incrementUserClaim(query.from.id);
           
-          bot.sendMessage(chatId, `🎉 *Key Generated Successfully!*\n\n*Extension:* ${extName}\n*Validity:* ${validity}\n*License Key:* \`${keyString}\`\n\n_Tap to copy the license key above._`, { parse_mode: 'Markdown' });
+          const claimKeyboard = {
+            inline_keyboard: [[{ text: '✅ Mark it claimed', callback_data: `mark_claimed` }]]
+          };
+          
+          bot.sendMessage(chatId, `🎉 *Key Generated Successfully!*\n\n*Extension:* ${extName}\n*Validity:* ${validity}\n*License Key:* \`${keyString}\`\n\n_Tap to copy the license key above._`, { 
+            parse_mode: 'Markdown',
+            reply_markup: claimKeyboard
+          });
           
           editMessage(getDurationMenu(extName, isAdmin)); // Refresh stock numbers
         }
+        return;
+      }
+      
+      if (data === 'mark_claimed') {
+        const msgText = query.message.text;
+        if (msgText) {
+          const lines = msgText.split('\n');
+          const extLine = lines.find(l => l.startsWith('Extension: '));
+          const valLine = lines.find(l => l.startsWith('Validity: '));
+          const keyLine = lines.find(l => l.startsWith('License Key: '));
+
+          const extName = extLine ? extLine.replace('Extension: ', '') : 'Unknown';
+          const validity = valLine ? valLine.replace('Validity: ', '') : 'Unknown';
+          const keyString = keyLine ? keyLine.replace('License Key: ', '') : 'Unknown';
+
+          const newText = `🎉 *Key Generated Successfully!*\n\n*Extension:* ${extName}\n*Validity:* ${validity}\n*License Key:* \`${keyString}\`\n\n_This key is successfully claimed_`;
+
+          bot.editMessageText(newText, {
+            chat_id: chatId,
+            message_id: messageId,
+            parse_mode: 'Markdown',
+            reply_markup: { inline_keyboard: [] }
+          }).catch(err => console.error(err));
+        }
+        bot.answerCallbackQuery(query.id);
         return;
       }
       

@@ -83,6 +83,16 @@ function isUserAuthorized(userId) {
   return { isAuthorized: false, maxKeys: 0 };
 }
 
+function getAuthorizedUsers() {
+  const stmt = db.prepare('SELECT user_id, max_daily_keys FROM authorized_users ORDER BY created_at DESC');
+  return stmt.all();
+}
+
+function revokeUser(userId) {
+  const stmt = db.prepare('DELETE FROM authorized_users WHERE user_id = ?');
+  stmt.run(userId.toString());
+}
+
 function getTodayString() {
   const date = new Date();
   return date.toISOString().split('T')[0]; // YYYY-MM-DD
@@ -197,6 +207,8 @@ function addActiveSession(sessionId, licenseKey, deviceId, activatedAt, expiresA
 module.exports = {
   addAuthorizedUser,
   isUserAuthorized,
+  getAuthorizedUsers,
+  revokeUser,
   canUserClaimToday,
   incrementUserClaim,
   addExtension,
